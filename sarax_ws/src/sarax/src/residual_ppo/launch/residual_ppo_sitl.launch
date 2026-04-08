@@ -1,0 +1,67 @@
+<launch>
+  <!-- ============================================================
+       residual_ppo_sitl.launch
+       Launches interaction_controller (SITL) + residual PPO node.
+
+       Args:
+         vehicle      : UAV config name (default: sarax_plus)
+         model        : absolute path to trained PPO model zip
+                        (without .zip), REQUIRED
+         vecnorm      : path to VecNormalize .pkl (optional)
+         alpha        : residual action scale fraction (default: 0.3)
+         dyn_rec      : launch rqt_reconfigure (default: true)
+         ppo_enabled  : enable/disable residual correction (default: true)
+
+       Usage example:
+         roslaunch residual_ppo residual_ppo_sitl.launch \
+           model:=$(rospack find residual_ppo)/models/ppo_residual_sarax_final
+  ============================================================ -->
+
+  <arg name="vehicle"     default="sarax_plus"/>
+  <arg name="model"       default="$(find residual_ppo)/models/ppo_residual_sarax_final"/>
+  <arg name="vecnorm"     default=""/>
+  <arg name="alpha"       default="0.3"/>
+  <arg name="dyn_rec"     default="true"/>
+  <arg name="ppo_enabled" default="true"/>
+
+  <!-- ── rqt_reconfigure (optional) ─────────────────────────── -->
+  <group if="$(arg dyn_rec)">
+    <node name="rqt_reconfig" pkg="rqt_reconfigure" type="rqt_reconfigure"/>
+  </group>
+
+  <!-- ── interaction_controller (SITL mode) ──────────────────── -->
+  <!-- sitl_params.yaml: 全局命名空间，controller 用 ros::NodeHandle() 读取 -->
+  <rosparam command="load"
+            file="$(find interaction_controller)/config/sitl/sitl_params.yaml"/>
+
+  <!-- uav_parameters: 必须在全局命名空间，controller::getUAVParameters()
+       使用无前缀 ros::NodeHandle 查找 /uav_parameters/mass 等 -->
+  <rosparam command="load"
+            file="$(find interaction_controller)/config/uav_parameters/$(arg vehicle)_param.yaml"/>
+
+  <node name="mrav_controller"
+        pkg="interaction_controller"
+        type="mrav_controller"
+        output="screen"/>
+
+  <node name="load_initial_gains"
+        pkg="dynamic_reconfigure"
+        type="dynparam"
+        args="load /mrav_controller
+              $(find interaction_controller)/config/controller/initial_gains_$(arg vehicle).yaml"/>
+
+  <!-- ── residual PPO node ────────────────────────────────────── -->
+  <!-- Only launch when ppo_enabled=true (allows easy A/B testing) -->
+  <group if="$(arg ppo_enabled)">
+    <node name="residual_ppo_node"
+          pkg="residual_ppo"
+          type="residual_ppo_node.py"
+          output="screen"
+          launch-prefix="">
+      <param name="model"   value="$(arg model)"/>
+      <param name="vecnorm" value="$(arg vecnorm)"/>
+      <param name="alpha"   value="$(arg alpha)"/>
+    </node>
+  </group>
+
+</launch>

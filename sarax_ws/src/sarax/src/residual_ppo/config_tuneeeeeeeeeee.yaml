@@ -1,0 +1,72 @@
+# Residual PPO training hyperparameters
+# Uses Stable-Baselines3 PPO
+
+ppo:
+  total_timesteps: 2_000_000
+  n_steps: 2048          # rollout buffer length per env
+  batch_size: 256
+  n_epochs: 10
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.005
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  learning_rate: 3.0e-4
+  policy: "MlpPolicy"
+  policy_kwargs:
+    net_arch:
+      - 256
+      - 256
+  n_envs: 8
+
+# ── Wind curriculum ────────────────────────────────────────────────────
+# Linearly ramp external wind disturbance from wind_start→wind_max
+# over anneal_steps timesteps. Keeps training from collapsing early.
+curriculum:
+  enabled: true
+  wind_start: 0.0          # N  (no wind at start)
+  wind_max: 5.0            # N  (max at end)
+  anneal_steps: 1_500_000
+
+# ── Arm curriculum ────────────────────────────────────────────────────
+# Controls how the manipulator moves during training episodes.
+#
+# Stage 1 – "static"  : arm held at a random-but-fixed pose each episode.
+#            Goal: learn to compensate fixed CoM shift and inertia change.
+#            obs q_arm_next ≈ q_arm (no motion), PPO learns mass effect.
+#
+# Stage 2 – "slow"    : arm moves toward a target at ≤ 0.3 rad/s.
+#            Goal: learn to use the next-command feedforward signal.
+#            transition_steps marks when to switch from stage 1→2.
+#
+# Stage 3 – "dynamic" : arm moves at full speed (≤ 1.0 rad/s per joint).
+#            Goal: full anticipatory compensation.
+#            transition_steps_dynamic marks switch from stage 2→3.
+arm_curriculum:
+  enabled: true
+  stage1_mode: "static"
+  stage2_mode: "slow"
+  stage3_mode: "dynamic"
+  transition_steps: 600_000        # switch static → slow  at 600k steps
+  transition_steps_dynamic: 1_200_000  # switch slow → dynamic at 1.2M steps
+
+# ── Fine-tuning config (used when --resume is passed) ─────────────────
+# Lower LR + tighter clip_range for stable fine-tuning on top of
+# a pretrained policy. Start directly at slow/dynamic arm curriculum.
+finetune:
+  total_timesteps: 1_000_000
+  learning_rate: 5.0e-5      # 6× smaller than pretraining
+  clip_range: 0.1            # tighter PPO clip for stability
+  ent_coef: 0.001            # less exploration needed
+  arm_start_mode: "slow"     # skip static stage, start from slow
+  wind_start: 3.0            # start with moderate wind (already trained)
+  wind_max: 8.0              # push further than pretraining
+
+# ── Paths ──────────────────────────────────────────────────────────────
+paths:
+  model_save_dir: "models"
+  model_name: "ppo_residual_sarax"
+  log_dir: "logs"
+  eval_freq: 50_000
+  n_eval_episodes: 20

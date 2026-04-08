@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>residual_ppo</name>
+  <version>0.1.0</version>
+  <description>Residual PPO reinforcement learning node for interaction_controller augmentation</description>
+  <maintainer email="user@example.com">user</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+
+  <export>
+  </export>
+</package>
