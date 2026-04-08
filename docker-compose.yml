@@ -1,0 +1,32 @@
+version: '3.8'
+services:
+  sarax:
+    image: ghcr.io/saxionmechatronics/sarax-framework:latest
+    container_name: sarax_dev
+    entrypoint: /usr/local/bin/entrypoint.sh
+    command: bash -c "pip install -q stable-baselines3 gymnasium pyyaml && bash"
+    volumes:
+      # 源码挂载：宿主机编辑，容器内实时生效
+      - ./sarax_ws/src:/home/user/sarax_ws/src
+      # build/devel 用 named volume，避免跨系统路径问题
+      - sarax_build:/home/user/sarax_ws/build
+      - sarax_devel:/home/user/sarax_ws/devel
+      # GUI 支持
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /dev:/dev
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - QT_X11_NO_MITSHM=1
+      - TERM=xterm
+      - TZ=UTC
+      - PATH=/home/user/.local/bin:${PATH}
+    privileged: true
+    network_mode: host
+    shm_size: '512mb'
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+volumes:
+  sarax_build:
+  sarax_devel:
