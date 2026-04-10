@@ -1,0 +1,68 @@
+<launch>
+  <arg name="vehicle"     default="sarax_plus"/>
+  <arg name="model"       default="$(find residual_ppo)/models/ppo_residual_sarax_final"/>
+  <arg name="vecnorm"     default=""/>
+  <arg name="alpha"       default="0.3"/>
+  <arg name="dyn_rec"     default="true"/>
+  <arg name="ppo_enabled" default="true"/>
+  <arg name="gui"         default="true"/>
+
+  <!-- Global planner + GUI parameters -->
+  <rosparam command="load"
+            file="$(find interaction_controller)/config/sitl/sitl_params.yaml"/>
+  <rosparam command="load"
+            file="$(find m4e_mav_trajectory_planner)/cfg/sarax_params.yaml"
+            ns="uav_parameters"/>
+
+  <!-- Controller + residual PPO -->
+  <include file="$(find residual_ppo)/launch/residual_ppo_sitl.launch">
+    <arg name="vehicle"     value="$(arg vehicle)"/>
+    <arg name="model"       value="$(arg model)"/>
+    <arg name="vecnorm"     value="$(arg vecnorm)"/>
+    <arg name="alpha"       value="$(arg alpha)"/>
+    <arg name="dyn_rec"     value="$(arg dyn_rec)"/>
+    <arg name="ppo_enabled" value="$(arg ppo_enabled)"/>
+  </include>
+
+  <!-- Manipulator impedance controller -->
+  <node name="manipulator_controller"
+        pkg="m4e_mani_impedance_control"
+        type="manipulator_controller"
+        output="screen">
+    <rosparam command="load"
+              file="$(find m4e_mani_impedance_control)/config/params_sim.yaml"/>
+  </node>
+
+  <!-- Manipulator user control services: /m4e_mani_user_control/foldArm, /extendArm -->
+  <node name="m4e_mani_impedance_user_control"
+        pkg="m4e_mani_impedance_control"
+        type="m4e_mani_impedance_control_user_control"
+        output="screen">
+    <rosparam command="load"
+              file="$(find m4e_mani_impedance_control)/config/params.yaml"/>
+  </node>
+
+  <!-- Global trajectory planner -->
+  <node name="trajectory_planner"
+        pkg="m4e_mav_trajectory_planner"
+        type="m4e_mav_trajectory_planner"
+        output="screen"/>
+
+  <!-- Global trajectory sampler:
+       path_segments_4D -> unsampled_trajectory
+       publishes command/trajectory -->
+  <node name="trajectory_sampler"
+        pkg="mav_trajectory_generation_ros"
+        type="trajectory_sampler_node"
+        output="screen">
+    <remap from="path_segments_4D" to="unsampled_trajectory"/>
+  </node>
+
+  <!-- Optional GUI -->
+  <group if="$(arg gui)">
+    <node name="m4e_gui_node"
+          pkg="m4e_gui"
+          type="m4e_gui_node.py"
+          output="screen"/>
+  </group>
+</launch>

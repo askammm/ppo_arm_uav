@@ -7,6 +7,7 @@ a wrench correction [Δτ_x, Δτ_y, Δτ_z, ΔT] to the interaction_controller.
 Subscribes:
   mavros/odometry/in          (nav_msgs/Odometry)        - UAV state
   command/pose                (geometry_msgs/PoseStamped) - position setpoint
+  command/trajectory          (trajectory_msgs/MultiDOFJointTrajectory) - trajectory setpoint
   debug/torque3D              (geometry_msgs/Vector3Stamped) - baseline torque
   /m4e_mani/joint_states      (sensor_msgs/JointState)   - arm current state
   /m4e_mani/trajectory        (sensor_msgs/JointState)   - arm next command ← feedforward
@@ -39,6 +40,7 @@ from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseStamped, Vector3Stamped
 from std_msgs.msg import Float32MultiArray
 from sensor_msgs.msg import JointState
+from trajectory_msgs.msg import MultiDOFJointTrajectory
 
 # Ensure envs/ is importable (for SaraxDynamics constants)
 _PKG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -54,6 +56,12 @@ def _quat_from_msg(q_msg: Any) -> NDArray[np.float64]:
 
 def _vec3_from_msg(v: Any) -> NDArray[np.float64]:
     return np.array([v.x, v.y, v.z], dtype=np.float64)
+
+
+def _yaw_from_quat(q: NDArray[np.float64]) -> float:
+    siny_cosp = 2.0 * (q[3] * q[2] + q[0] * q[1])
+    cosy_cosp = 1.0 - 2.0 * (q[1] * q[1] + q[2] * q[2])
+    return float(np.arctan2(siny_cosp, cosy_cosp))
 
 
 class ResidualPPONode:
@@ -177,6 +185,8 @@ class ResidualPPONode:
                          self._odom_cb, queue_size=1)
         rospy.Subscriber("command/pose", PoseStamped,
                          self._cmd_cb, queue_size=1)
+        rospy.Subscriber("command/trajectory", MultiDOFJointTrajectory,
+                         self._traj_cmd_cb, queue_size=1)
         rospy.Subscriber("debug/torque3D", Vector3Stamped,
                          self._torque_cb, queue_size=1)
 
@@ -210,11 +220,33 @@ class ResidualPPONode:
     def _cmd_cb(self, msg: PoseStamped) -> None:
         with self._lock:
             self._pos_cmd = _vec3_from_msg(msg.pose.position)
-            q = _quat_from_msg(msg.pose.orientation)
-            # Extract yaw from quaternion
-            siny_cosp = 2.0 * (q[3]*q[2] + q[0]*q[1])
-            cosy_cosp = 1.0 - 2.0 * (q[1]*q[1] + q[2]*q[2])
-            self._yaw_cmd = float(np.arctan2(siny_cosp, cosy_cosp))
+            self._yaw_cmd = _yaw_from_quat(_quat_from_msg(msg.pose.orientation))
+            self._cmd_received = True
+
+    def _traj_cmd_cb(self, msg: MultiDOFJointTrajectory) -> None:
+        """
+        Receive trajectory commands and extract the first target point.
+        This mirrors the controller's use of mav_msgs::eigenTrajectoryPointFromTrajMsg,
+        which reads the first point of the trajectory message.
+        """
+        if not msg.points:
+            rospy.logwarn_throttle(
+                5.0, "[residual_ppo] Received empty /command/trajectory message."
+            )
+            return
+
+        point = msg.points[0]
+        if not point.transforms:
+            rospy.logwarn_throttle(
+                5.0,
+                "[residual_ppo] First /command/trajectory point has no transforms.",
+            )
+            return
+
+        transform = point.transforms[0]
+        with self._lock:
+            self._pos_cmd = _vec3_from_msg(transform.translation)
+            self._yaw_cmd = _yaw_from_quat(_quat_from_msg(transform.rotation))
             self._cmd_received = True
 
     def _torque_cb(self, msg: Vector3Stamped) -> None:
