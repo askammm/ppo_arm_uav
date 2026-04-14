@@ -1,0 +1,24 @@
+<launch>
+  <arg name="ppo_enabled" default="true"/>
+  <arg name="gui" default="false"/>
+  <arg name="run_label" default=""/>
+  <arg name="log_position_error" default="true"/>
+  <arg name="schedule_config" default="$(find residual_ppo)/config/fixed_schedule.yaml"/>
+  <arg name="start_delay" default="5.0"/>
+  <arg name="alpha"       default="0.05"/>
+
+  <include file="$(find residual_ppo)/launch/residual_ppo_full_sitl.launch">
+    <arg name="ppo_enabled" value="$(arg ppo_enabled)"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="run_label" value="$(arg run_label)"/>
+    <arg name="log_position_error" value="$(arg log_position_error)"/>
+  </include>
+
+  <node name="fixed_schedule_runner"
+        pkg="residual_ppo"
+        type="fixed_schedule_runner.py"
+        output="screen">
+    <param name="start_delay" value="$(arg start_delay)"/>
+    <rosparam command="load" file="$(arg schedule_config)"/>
+  </node>
+</launch>

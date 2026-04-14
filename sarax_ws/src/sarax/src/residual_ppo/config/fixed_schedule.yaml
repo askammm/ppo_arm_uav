@@ -1,0 +1,27 @@
+sequence:
+  - time: 2.0
+    action: takeoff
+    altitude: 1.5
+  - time: 4.0
+    action: offboard
+  - time: 5.0
+    action: arm
+  - time: 18.0
+    action: waypoint
+    x: 0.0
+    y: 0.0
+    z: 1.5
+  - time: 28.0
+    action: extend_arm
+  - time: 40.0
+    action: waypoint
+    x: 1.0
+    y: 0.0
+    z: 1.5
+  - time: 55.0
+    action: waypoint
+    x: 1.0
+    y: 1.0
+    z: 1.5
+  - time: 70.0
+    action: fold_arm

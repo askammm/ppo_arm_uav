@@ -6,6 +6,9 @@
   <arg name="dyn_rec"     default="true"/>
   <arg name="ppo_enabled" default="true"/>
   <arg name="gui"         default="true"/>
+  <arg name="log_position_error" default="true"/>
+  <arg name="run_label" default=""/>
+  <arg name="log_dir" default="$(find residual_ppo)/logs/position_error"/>
 
   <!-- Global planner + GUI parameters -->
   <rosparam command="load"
@@ -64,5 +67,16 @@
           pkg="m4e_gui"
           type="m4e_gui_node.py"
           output="screen"/>
+  </group>
+
+  <group if="$(arg log_position_error)">
+    <node name="position_error_logger"
+          pkg="residual_ppo"
+          type="position_error_logger.py"
+          output="screen">
+      <param name="topic" value="/debug/pos_error"/>
+      <param name="run_label" value="$(arg run_label)"/>
+      <param name="log_dir" value="$(arg log_dir)"/>
+    </node>
   </group>
 </launch>
