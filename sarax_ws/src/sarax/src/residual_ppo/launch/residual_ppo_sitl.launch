@@ -18,7 +18,7 @@
   ============================================================ -->
 
   <arg name="vehicle"     default="sarax_plus"/>
-  <arg name="model"       default="$(find residual_ppo)/models/ppo_residual_sarax_final"/>
+  <arg name="model"       default="$(find residual_ppo)/models/ppo_residual_sarax_sim2j_final"/>
   <arg name="vecnorm"     default=""/>
   <arg name="alpha"       default="0.3"/>
   <arg name="dyn_rec"     default="true"/>

@@ -106,6 +106,40 @@ def normalize_quat(q):
     return q / np.linalg.norm(q)
 
 
+def sim_measured_to_internal(q_meas, dq_meas=None):
+    """
+    Convert the 2-DOF simulated joint feedback interface into the 3-DOF
+    internal manipulator coordinates used by the residual model.
+    """
+    q_meas = np.asarray(q_meas, dtype=float)
+    q_internal = np.array([0.0, q_meas[0], q_meas[1] - q_meas[0]], dtype=float)
+
+    if dq_meas is None:
+        return q_internal, None
+
+    dq_meas = np.asarray(dq_meas, dtype=float)
+    dq_internal = np.array([0.0, dq_meas[0], dq_meas[1] - dq_meas[0]], dtype=float)
+    return q_internal, dq_internal
+
+
+def internal_to_sim_measured(q_internal, dq_internal=None):
+    """
+    Convert the 3-DOF internal manipulator coordinates into the 2-DOF
+    simulated joint feedback interface published by Gazebo.
+    """
+    q_internal = np.asarray(q_internal, dtype=float)
+    q_meas = np.array([q_internal[1], q_internal[1] + q_internal[2]], dtype=float)
+
+    if dq_internal is None:
+        return q_meas, None
+
+    dq_internal = np.asarray(dq_internal, dtype=float)
+    dq_meas = np.array(
+        [dq_internal[1], dq_internal[1] + dq_internal[2]], dtype=float
+    )
+    return q_meas, dq_meas
+
+
 # ---------------------------------------------------------------------------
 # Arm forward kinematics (body frame, simplified planar chain)
 # ---------------------------------------------------------------------------

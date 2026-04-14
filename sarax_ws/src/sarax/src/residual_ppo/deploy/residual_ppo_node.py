@@ -9,15 +9,15 @@ Subscribes:
   command/pose                (geometry_msgs/PoseStamped) - position setpoint
   command/trajectory          (trajectory_msgs/MultiDOFJointTrajectory) - trajectory setpoint
   debug/torque3D              (geometry_msgs/Vector3Stamped) - baseline torque
-  /m4e_mani/joint_states      (sensor_msgs/JointState)   - arm current state
+  /sarax_mani/joint_states    (sensor_msgs/JointState)   - arm current state
   /m4e_mani/trajectory        (sensor_msgs/JointState)   - arm next command ← feedforward
 
 Publishes:
   /residual_ppo/wrench_correction  (std_msgs/Float32MultiArray) - [Δτx,Δτy,Δτz,ΔT]
 
-Observation (29D):
+Observation (26D):
   e_p(3) e_v(3) e_R(3) omega(3) tau_base(3) T_base(1) prev_action(4)
-  q_arm(3) dq_arm(3) q_arm_next(3)   ← arm state + next command feedforward
+  q_arm_meas(2) dq_arm_meas(2) q_arm_next_meas(2)   ← arm state + feedforward
 
 Usage:
   rosrun residual_ppo residual_ppo_node.py \
@@ -47,7 +47,13 @@ _PKG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PKG_ROOT not in sys.path:
     sys.path.insert(0, _PKG_ROOT)
 
-from envs.sarax_dynamics import SaraxDynamics, quat_to_rot, vee
+from envs.sarax_dynamics import (
+    SaraxDynamics,
+    internal_to_sim_measured,
+    quat_to_rot,
+    sim_measured_to_internal,
+    vee,
+)
 
 
 def _quat_from_msg(q_msg: Any) -> NDArray[np.float64]:
@@ -165,13 +171,18 @@ class ResidualPPONode:
         self._cmd_received: bool = False
 
         # --- Arm state buffers ---
-        self._q_arm: NDArray[np.float64] = np.zeros(3)   # current joint angles
-        self._dq_arm: NDArray[np.float64] = np.zeros(3)  # current joint velocities
+        self._q_arm: NDArray[np.float64] = np.zeros(3)   # internal arm angles
+        self._dq_arm: NDArray[np.float64] = np.zeros(3)  # internal arm velocities
         self._q_arm_next: NDArray[np.float64] = np.zeros(3)   # next-step arm command
         self._arm_received: bool = False
 
         # Joint name → index mapping (populated on first JointState message)
-        self._arm_joint_names: List[str] = ["joint1", "joint2", "joint3"]
+        self._arm_state_topic: str = rospy.get_param(
+            "~arm_joint_states_topic", "/sarax_mani/joint_states"
+        )
+        self._arm_joint_names: List[str] = rospy.get_param(
+            "~arm_joint_names", ["mani_joint_1", "mani_joint_2"]
+        )
         self._arm_idx: Optional[List[int]] = None
 
         # --- ROS interface ---
@@ -191,7 +202,7 @@ class ResidualPPONode:
                          self._torque_cb, queue_size=1)
 
         # Arm state: actual joint positions/velocities (150 Hz in sim)
-        rospy.Subscriber("/m4e_mani/joint_states", JointState,
+        rospy.Subscriber(self._arm_state_topic, JointState,
                          self._arm_state_cb, queue_size=1)
 
         # Arm NEXT command (feedforward): the trajectory command sent to the arm
@@ -202,8 +213,11 @@ class ResidualPPONode:
         # 125 Hz timer (matches controller_node main loop)
         rospy.Timer(rospy.Duration(1.0 / 125.0), self._inference_cb)
 
-        rospy.loginfo("[residual_ppo] Node ready. enabled=%s  obs_dim=29",
-                      self.enabled)
+        rospy.loginfo(
+            "[residual_ppo] Node ready. enabled=%s obs_dim=26 arm_topic=%s",
+            self.enabled,
+            self._arm_state_topic,
+        )
 
     # ------------------------------------------------------------------
     # Subscribers
@@ -261,15 +275,23 @@ class ResidualPPONode:
                 try:
                     self._arm_idx = [list(msg.name).index(n)
                                      for n in self._arm_joint_names]
+                    rospy.loginfo(
+                        "[residual_ppo] Arm joint mapping on %s: %s -> %s",
+                        self._arm_state_topic,
+                        self._arm_joint_names,
+                        self._arm_idx,
+                    )
                 except ValueError:
                     return   # joint names not yet known
             idx = self._arm_idx
             if len(msg.position) > max(idx):
-                self._q_arm  = np.array([msg.position[i] for i in idx],
-                                         dtype=np.float64)
+                q_meas = np.array([msg.position[i] for i in idx], dtype=np.float64)
+                q_internal, _ = sim_measured_to_internal(q_meas)
+                self._q_arm = q_internal
             if len(msg.velocity) > max(idx):
-                self._dq_arm = np.array([msg.velocity[i] for i in idx],
-                                         dtype=np.float64)
+                dq_meas = np.array([msg.velocity[i] for i in idx], dtype=np.float64)
+                _, dq_internal = sim_measured_to_internal(np.zeros(2), dq_meas)
+                self._dq_arm = dq_internal
             self._arm_received = True
 
     def _arm_cmd_cb(self, msg: JointState) -> None:
@@ -279,19 +301,15 @@ class ResidualPPONode:
         arm impedance controller will track next — giving PPO advance notice.
         """
         with self._lock:
-            if self._arm_idx is None:
-                return
-            idx = self._arm_idx
-            if len(msg.position) > max(idx):
-                self._q_arm_next = np.array([msg.position[i] for i in idx],
-                                             dtype=np.float64)
+            if len(msg.position) >= 3:
+                self._q_arm_next = np.array(msg.position[:3], dtype=np.float64)
 
     # ------------------------------------------------------------------
     # Inference (125 Hz)
     # ------------------------------------------------------------------
 
     def _build_obs(self) -> NDArray[np.float32]:
-        """Build the 29D observation vector (matches residual_env.py)."""
+        """Build the 26D observation vector (matches residual_env.py)."""
         with self._lock:
             pos         = self._pos.copy()
             quat        = self._quat.copy()
@@ -301,9 +319,9 @@ class ResidualPPONode:
             yaw_cmd     = self._yaw_cmd
             tau_base    = self._tau_base.copy()
             prev_action = self._prev_action.copy()
-            q_arm       = self._q_arm.copy()
-            dq_arm      = self._dq_arm.copy()
-            q_arm_next  = self._q_arm_next.copy()
+            q_arm_internal = self._q_arm.copy()
+            dq_arm_internal = self._dq_arm.copy()
+            q_arm_next_internal = self._q_arm_next.copy()
 
         R_bw  = quat_to_rot(quat)
         vel_w = R_bw @ vel_b
@@ -316,7 +334,7 @@ class ResidualPPONode:
         self.dyn.quat  = quat
         self.dyn.vel_b = vel_b
         self.dyn.omega = omega
-        self.dyn.set_arm_state(q_arm, dq_arm)
+        self.dyn.set_arm_state(q_arm_internal, dq_arm_internal)
 
         base_wrench, _, _, R_d_w = self.dyn.compute_baseline_wrench(
             pos_cmd, yaw_cmd)
@@ -324,12 +342,17 @@ class ResidualPPONode:
         e_R     = vee(e_R_mat)
         T_base  = np.array([base_wrench[3]])
 
+        q_arm_meas, dq_arm_meas = internal_to_sim_measured(
+            q_arm_internal, dq_arm_internal
+        )
+        q_arm_next_meas, _ = internal_to_sim_measured(q_arm_next_internal)
+
         obs = np.concatenate([
             e_p, e_v, e_R, omega,          # 12
             tau_base, T_base,              #  4
             prev_action,                   #  4
-            q_arm, dq_arm, q_arm_next,     #  9  ← arm state + feedforward
-        ]).astype(np.float32)              # = 29
+            q_arm_meas, dq_arm_meas, q_arm_next_meas,  # 6
+        ]).astype(np.float32)                          # = 26
         return obs
 
     def _inference_cb(self, event: rospy.timer.TimerEvent) -> None:
@@ -340,8 +363,9 @@ class ResidualPPONode:
         # arm_received 可选：若机械臂话题未连接则用零值（向后兼容）
         if not self._arm_received:
             rospy.logwarn_throttle(5.0,
-                "[residual_ppo] /m4e_mani/joint_states not yet received, "
-                "using q_arm=0. Check arm topic.")
+                "[residual_ppo] %s not yet received, using q_arm=0.",
+                self._arm_state_topic,
+            )
 
         try:
             obs = self._build_obs()

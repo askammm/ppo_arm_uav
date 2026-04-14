@@ -2,7 +2,7 @@
 residual_env.py
 Gymnasium environment for residual PPO training on sarax_plus + M4E arm.
 
-Observation (29D):
+Observation (26D):
   [0:3]   position error  e_p          (world frame)
   [3:6]   velocity error  e_v          (world frame)
   [6:9]   attitude error  e_R          (SO3 vee map)
@@ -10,9 +10,9 @@ Observation (29D):
   [12:15] baseline torque  tau_base
   [15]    baseline thrust   T_base
   [16:20] previous residual action     (4D, Markov補償)
-  [20:23] current arm joint angles     q_arm   [j1,j2,j3]
-  [23:26] current arm joint velocities dq_arm  [j1,j2,j3]
-  [26:29] NEXT arm joint command       q_arm_next  ← feedforward
+  [20:22] current sim joint angles     q_arm_meas
+  [22:24] current sim joint velocities dq_arm_meas
+  [24:26] NEXT sim joint command       q_arm_next_meas  ← feedforward
 
 Action (4D, continuous, clipped to [-1,1]):
   [Δτ_x, Δτ_y, Δτ_z, ΔT]  scaled by alpha × max torque/thrust
@@ -27,7 +27,7 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-from envs.sarax_dynamics import SaraxDynamics, vee
+from envs.sarax_dynamics import SaraxDynamics, internal_to_sim_measured, vee
 
 
 # ---------------------------------------------------------------------------
@@ -63,8 +63,9 @@ DEFAULT_ENV_CONFIG = {
 class ResidualPPOEnv(gym.Env):
     """
     Gymnasium environment wrapping SaraxDynamics (UAV + M4E arm).
-    Observation includes current arm state AND next-step arm command
-    so the policy can anticipate arm-induced disturbances.
+    Observation includes the simulated 2-DOF arm feedback interface and the
+    next-step arm command in the same interface so the policy can anticipate
+    arm-induced disturbances.
     """
 
     metadata = {"render_modes": []}
@@ -90,8 +91,8 @@ class ResidualPPOEnv(gym.Env):
         self._q_max = self.dyn.p["joint_pos_max"]
         self._dq_max = self.dyn.p["joint_vel_max"]
 
-        # Observation: 29D
-        obs_high = np.full(29, np.inf, dtype=np.float32)
+        # Observation: 26D
+        obs_high = np.full(26, np.inf, dtype=np.float32)
         self.observation_space = spaces.Box(-obs_high, obs_high, dtype=np.float32)
 
         # Action: 4D in [-1,1]
@@ -135,12 +136,16 @@ class ResidualPPOEnv(gym.Env):
         self._pos_cmd[2] = rng.uniform(0.5, 2.5)
         self._yaw_cmd    = rng.uniform(-np.pi, np.pi)
 
-        # Random arm configuration for this episode
+        # Random arm configuration for this episode.
+        # In simulation the first joint is fixed and only the last two DOFs
+        # are observable through /sarax_mani/joint_states.
         q_arm_init = rng.uniform(self._q_min, self._q_max).astype(np.float64)
+        q_arm_init[0] = 0.0
 
         # For static curriculum: arm target = initial pose (no movement)
         # For dynamic: target changes over episode
         self._q_arm_target   = rng.uniform(self._q_min, self._q_max)
+        self._q_arm_target[0] = 0.0
         self._q_arm_next_cmd = q_arm_init.copy()
 
         # UAV initial state near goal
@@ -216,15 +221,19 @@ class ResidualPPOEnv(gym.Env):
         mode = self.cfg["arm_curriculum"]
         if mode == "static":
             # Hold current position
-            return self.dyn.q_arm.copy()
+            q_cmd = self.dyn.q_arm.copy()
+            q_cmd[0] = 0.0
+            return q_cmd
         elif mode == "slow":
             # Move toward target at ≤ 0.3 rad/s
             dt   = self.cfg["dt"]
             diff = self._q_arm_target - self.dyn.q_arm
+            diff[0] = 0.0
             max_step = 0.3 * dt
             step = np.clip(diff, -max_step, max_step)
-            return np.clip(self.dyn.q_arm + step,
-                           self._q_min, self._q_max)
+            q_cmd = np.clip(self.dyn.q_arm + step, self._q_min, self._q_max)
+            q_cmd[0] = 0.0
+            return q_cmd
         else:  # dynamic
             # Move at full speed toward target; randomize target when reached
             dt   = self.cfg["dt"]
@@ -232,9 +241,13 @@ class ResidualPPOEnv(gym.Env):
             if np.linalg.norm(diff) < 0.05:
                 self._q_arm_target = self.np_random.uniform(
                     self._q_min, self._q_max)
+                self._q_arm_target[0] = 0.0
                 diff = self._q_arm_target - self.dyn.q_arm
+            diff[0] = 0.0
             step = np.clip(diff, -self._dq_max * dt, self._dq_max * dt)
-            return np.clip(self.dyn.q_arm + step, self._q_min, self._q_max)
+            q_cmd = np.clip(self.dyn.q_arm + step, self._q_min, self._q_max)
+            q_cmd[0] = 0.0
+            return q_cmd
 
     def _get_obs(self):
         from envs.sarax_dynamics import quat_to_rot
@@ -254,16 +267,17 @@ class ResidualPPOEnv(gym.Env):
         tau_base = base_wrench[:3]
         T_base   = np.array([base_wrench[3]])
 
-        q_arm    = state["q_arm"]          # current arm angles  (3)
-        dq_arm   = state["dq_arm"]         # current arm velocities (3)
-        q_next   = self._q_arm_next_cmd    # NEXT arm command    (3) ← feedforward
+        q_arm_meas, dq_arm_meas = internal_to_sim_measured(
+            state["q_arm"], state["dq_arm"]
+        )
+        q_next_meas, _ = internal_to_sim_measured(self._q_arm_next_cmd)
 
         obs = np.concatenate([
             e_p, e_v, e_R, omega,          # 12
             tau_base, T_base,              #  4
             self._prev_action,             #  4
-            q_arm, dq_arm, q_next,         #  9  ← new
-        ])                                 # = 29 total
+            q_arm_meas, dq_arm_meas, q_next_meas,  # 6
+        ])                                         # = 26 total
         return obs.astype(np.float32)
 
     def _sample_wind(self):
