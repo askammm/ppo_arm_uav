@@ -4,4 +4,5 @@ system:ubuntu 20.04<br>
 this project is based on Sarax(join a robot arm in gazebo )<br>
 what new between sarax and this project: <br>
 add a small ppo network (inpput:the Pose error of arm and drone /desired arms' trajectory command for the next moment)(output:force/Torque)(in sarax_ws/src/sarax/src/residual_ppo)
+<img width="1623" height="891" alt="屏幕截图 2026-03-17 151316" src="https://github.com/user-attachments/assets/6233679a-2408-4efb-ba63-440a89a422fc" />
 
